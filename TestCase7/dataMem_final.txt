@@ -1,2 +1,27 @@
 Data stored in DRAM after cycle :26
 248 : 1
+Data stored in DRAM after cycle :50
+248 : 1
+43940 : 10
+Data stored in DRAM after cycle :74
+248 : 1
+43940 : 10
+87628 : 10
+Data stored in DRAM after cycle :96
+248 : 1
+43940 : 10
+87628 : 10
+131320 : 5
+Data stored in DRAM after cycle :118
+248 : 1
+43940 : 10
+87628 : 10
+131320 : 5
+175012 : 10
+Data stored in DRAM after cycle :140
+248 : 1
+43940 : 10
+87628 : 10
+131320 : 5
+175012 : 10
+218700 : 10
