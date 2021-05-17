@@ -12,18 +12,22 @@ using namespace std;
 #define word bitset<32>
 #define MEMSIZE 1048576
 #define DRAM_BUFFERSIZE 64
+#define MAX_NUM_CORES 32
 
 int N,M;
 int row_access_delay;
 int col_access_delay;
 vector<int> buffer_updates;
+vector<int> lws;
+vector<int> sws;
 int cycle_num;
 vector<int> programCounters;
 vector<string> filenames;
 bool verbose;
 map<string, bitset<5> > reg_2_bit;
 vector<int> mem_offsets;
-
+string path;
+bool ALL_DONE = false;
 void regCodes_init(){
 
     reg_2_bit.insert(pair<string, bitset<5>>("$zero",bitset<5>(0)));
@@ -54,6 +58,8 @@ void regCodes_init(){
     reg_2_bit.insert(pair<string, bitset<5>>("$t9",bitset<5>(25)));
     ////// registers 26-31 are reserved/ not to be used in this assignment, hence it is assumed that they won't be entered
 }
+vector<tuple<int,int,int,int>> MRM_activity;
+
 
 bitset<5> regCode(string regName){       ///// gives 5 bit representation of register
 	auto itr = reg_2_bit.find(regName);
@@ -283,7 +289,7 @@ class RF
           ifstream registerfile;
           string line;
           int i=0;
-          string RF_init_file = "RF_init_"+to_string(j)+".txt";
+          string RF_init_file = path+"RF_init_"+to_string(j)+".txt";
           registerfile.open(RF_init_file);
           if(verbose){
               cout<<"Started reading register file initial state\n";
@@ -322,7 +328,7 @@ class RF
         void OutputRF()
         {
           ofstream rfout;
-          string RF_out_file = "RF_final_"+to_string(core_num)+".txt";
+          string RF_out_file = path+"RF_final_"+to_string(core_num)+".txt";
           rfout.open(RF_out_file,std::ios_base::app);
           if (rfout.is_open())
           {
@@ -518,7 +524,8 @@ class Memory
          cout<<"Writing data of memory to dataMem_final.txt\n";
        }
        ofstream rfout;
-       rfout.open("dataMem_final.txt",std::ios_base::app);
+       string dataFile = path+"dataMem_final.txt";
+       rfout.open(dataFile,std::ios_base::app);
        if (rfout.is_open())
        {
          rfout<<"Data stored in DRAM after cycle :"<<cycle_num<<endl;
@@ -708,6 +715,7 @@ public:
       else{
         curr_req.in_cycle = MRM_cycle_num++;
       }
+      MRM_activity.push_back(make_tuple(curr_req.in_cycle,1,curr_req.core_num,curr_req.id));
       DRAM_curr_req = curr_req;
       DRAM_curr_req.status = 1;
       if(!my_mem.is_active){
@@ -730,6 +738,7 @@ public:
   }
 
   static void MemoryReqManage(DRAM_req& temp_req, int& visible_delay){
+
     if(DRAM_queue.size() <= 0){
       visible_delay = -1;
       temp_req = DRAM_req(-1);
@@ -750,29 +759,36 @@ public:
     it = DRAM_queue.begin();
     advance(it,posn);
     temp_req = DRAM_queue[posn];
+    bool prefetched = false;
     if(same_row && (temp_req.in_cycle <= DRAM_curr_req.c_cycle-1)){
       visible_delay = 0;
     }
     else if(same_row && (temp_req.in_cycle == DRAM_curr_req.c_cycle)){
       visible_delay = 1;
     }
+    else if(same_row && (temp_req.in_cycle > DRAM_curr_req.c_cycle)){
+      visible_delay = 1;
+      prefetched = true;
+    }
     else if(temp_req.in_cycle <= DRAM_curr_req.c_cycle ){
       visible_delay = 0;
     }
-    else{
-      visible_delay = -1;
-      temp_req = DRAM_req(-1);
-      return;
-    }
     if(visible_delay != -1){
+
       DRAM_queue.erase(it);
       helper.erase(it1);
       int j = temp_req.core_num;
       it = std::find(Cache_queues[j].begin(), Cache_queues[j].end(),DRAM_curr_req);
       Cache_queues[j].erase(it);
+      int forward = visible_delay;
+      int forward_value = 1;
+      if(prefetched){
+        forward = 0;
+        forward_value = 2;
+      }
       for(DRAM_req& req : DRAM_queue){
-        if(req.in_cycle >= DRAM_curr_req.c_cycle + visible_delay){
-          req.in_cycle++;
+        if(req.in_cycle >= DRAM_curr_req.c_cycle +forward){
+          req.in_cycle+=forward_value;
           MRM_cycle_num = max(MRM_cycle_num,req.in_cycle+1);
         }
       }
@@ -782,11 +798,22 @@ public:
   static void sendToDRAM(DRAM_req& curr_req, int delay){
     DRAM_curr_req = curr_req;
     DRAM_curr_req.status = 1;
-
     if(delay == -1){
       return;
     }
+    if(curr_req.in_cycle <= cycle_num){
+      MRM_activity.push_back(make_tuple(curr_req.in_cycle,2,curr_req.core_num,curr_req.id));
+    }
+    else{
 
+    }
+    if(delay == 0){
+    MRM_activity.push_back(make_tuple(cycle_num,3,curr_req.core_num,curr_req.id));
+    }
+    else{
+    MRM_activity.push_back(make_tuple(cycle_num,4,curr_req.core_num,curr_req.id));
+    MRM_activity.push_back(make_tuple(cycle_num+1,3,curr_req.core_num,curr_req.id));
+    }
     if(!my_mem.is_active){
       DRAM_curr_req.a_cycle = cycle_num + row_access_delay + delay;
       DRAM_curr_req.c_cycle = cycle_num + row_access_delay + col_access_delay + delay;
@@ -829,16 +856,15 @@ int action(){
       my_mem.writeback(my_mem.active_row);
       return 1;
   }
-  /*if(cycle_num == DRAM_curr_req.c_cycle - 1){
-    my_MRM.MemoryReqManage(next_req, visible_delay);
-  }*/
   if(cycle_num == DRAM_curr_req.c_cycle){
       cout<<"DRAM STATUS : COLUMN ACCESSED for request came in cycle "<<DRAM_curr_req.in_cycle<<"\n";
       if(DRAM_curr_req.id == 0) //lw
       {
+          lws[DRAM_curr_req.core_num]++;
           my_mem.ReadWrite(DRAM_curr_req.Address,bitset<5>(DRAM_curr_req.to_reg), bitset<5>(0), bitset<1>(1), bitset<1>(0),RegFiles[j] );
       }
       else{       //sw
+          sws[DRAM_curr_req.core_num]++;
           my_mem.ReadWrite(DRAM_curr_req.Address,bitset<5>(0),bitset<5>(DRAM_curr_req.from_reg), bitset<1>(0), bitset<1>(1),RegFiles[j] );
       }
       my_MRM.MemoryReqManage(next_req, visible_delay);
@@ -1252,7 +1278,6 @@ void execute(Instruction curr_inst,ALU& my_ALU, Memory& my_mem, RF& RegFile, int
       }
       int setAsCurrent = MRM::sendReq(curr_req);
       if(setAsCurrent == 0){   //// case 0 : some DRAM request is going on => push in buffer
-        cout<<"WAHEGURU\n";
         Cache_queues[core_num][n-1].uid = curr_req.uid;
         Cache_queues[core_num][n-1].status = 0;
       }
@@ -1322,9 +1347,10 @@ void interpret(vector<ALU>& my_ALUs, Memory& my_mem, vector<RF>& RegFiles, vecto
   DRAM_alone[0] = -1;
   Cache_queues.resize(N+1);
   cycle_num = 1;
-	while(true){
+	while(cycle_num <= M){
 	    if(DRAM_curr_req.core_num == -1 && my_MRM.DRAM_queue.size()==0 && !count(done.begin(), done.end(),0)){
         //all the instructions have been executed
+          ALL_DONE = true;
           break;
 	    }
       cout<<"\tCYCLE NUM : "<<cycle_num<<endl;
@@ -1387,7 +1413,7 @@ void interpret(vector<ALU>& my_ALUs, Memory& my_mem, vector<RF>& RegFiles, vecto
 int main(int argc, char** argv){
   if(argc<5){
     cout<<"Kindly run the executable using no. of CPU cores,simulation time, row_access_delay and col_access_delay as command line arguments respectively.\n";
-    cout<<"For details of each cycle, pass another '1' as command line argument.\n";
+    cout<<"For executing files from a folder TestCase<i>, pass i as the next command line argument.\n";
     return -1;
   }
   N = atoi(argv[1]);
@@ -1406,11 +1432,33 @@ int main(int argc, char** argv){
     cout<<"Kindly enter a non zero integer as column access delay\n";
     return -1;
   }
+  bool from_folder = false;
+  int folder_num;
   verbose = false;
-  if(argc == 6 && atoi(argv[5]) == 1){
+  if(argc == 6 ){
+    folder_num = atoi(argv[5]);
+    from_folder = true;
+  }
+  cout<<"Do you want to see the details with each cycle? (Y/n)\n";
+  string s;
+  cin>>s;
+  if(s == "Y" || s=="y"){
     verbose = true;
   }
+  if(N>MAX_NUM_CORES){
+    cout<<"Maximum number of cores is 32.\n";
+    if(N==33){
+      cout<<"File t33 won't be executed.\n";
+    }
+    else{
+      cout<<"Files t33-t"<<N<<" won't be executed.\n";
+    }
+    N=32;
+  }
+  ALL_DONE = false;
   buffer_updates = vector<int>(N+1,0);
+  lws = vector<int>(N+1,0);
+  sws = vector<int>(N+1,0);
   my_mem = Memory(N);
   int offset = ((1024*1024)/N);
   mem_offsets.push_back(-1);
@@ -1420,16 +1468,21 @@ int main(int argc, char** argv){
     start_addr+=offset;
   }
   uids = vector<int>(N+1,0);
-
+  path = "";
+  if(from_folder){
+    path = "TestCase"+to_string(folder_num)+"/";
+  }
   for(int i = 0; i< N+1 ; i++){
-    filenames.push_back("t"+to_string(i)+".txt");
+    filenames.push_back(path+"t"+to_string(i));
   }
   for(int i = 1; i< N+1; i++){
-      string file_name = "RF_final_"+to_string(i)+".txt";
+      string file_name = path+"RF_final_"+to_string(i)+".txt";
       char* my_file = &file_name[0];
       remove(my_file);          //// deletes the files if present initially
   }
-  remove("dataMem_final.txt");
+  string prevFile = path+"dataMem_final.txt";
+  char* prev = &prevFile[0];
+  remove(prev);
   regCodes_init();
   my_mem.is_active = false;
   try{
@@ -1484,7 +1537,7 @@ int main(int argc, char** argv){
     }
   }
   cycle_num--;   // it was incremented before exitting
-  if(my_mem.writeback_pending){
+  if( ALL_DONE && cycle_num+row_access_delay <= M &&  my_mem.writeback_pending){
     cycle_num++;
     for(int i = 0; i < row_access_delay - 1; i++){
       cout<<"\tCYCLE NUM : "<<cycle_num<<endl;
@@ -1495,6 +1548,20 @@ int main(int argc, char** argv){
     cout<<"DRAM STATUS : FINAL WRITEBACK DONE - ROW "<<my_mem.active_row<<endl;
     my_mem.writeback(my_mem.active_row);
   }
+
+  for(DRAM_req r : my_MRM.DRAM_queue){
+    MRM_activity.push_back(make_tuple(r.in_cycle,2,r.core_num,r.id));
+  }
+  sort(MRM_activity.begin(),MRM_activity.end());
+  cout<<"\n\t\t\t MRM ACTIVITY\n";
+  cout<<"CYCLE NUM\t\t    ACTION\t\tCORE NUM\tINSTRUCTION\n";
+  vector<string> MRM_actions = {"","FETCH AND SEND","PUSH TO BUFFER","SEND TO DRAM","PREFETCH"};
+  vector<string> name = {"lw","sw"};
+  for(int q = 0; q<MRM_activity.size(); q++){
+    cout<<"  "<<get<0>(MRM_activity[q])<<"\t\t\t"<<MRM_actions[get<1>(MRM_activity[q])]<<"\t\t"<<get<2>(MRM_activity[q])<<"\t\t"<<name[get<3>(MRM_activity[q])]<<"\n";
+  }
+
+  int total_ins_count = 0;
   cout<<endl<<"STATISTICS"<<endl;
   cout<<"No. of clock cycles : "<<cycle_num<<endl;
   for(int i = 1; i<N+1; i++){
@@ -1504,9 +1571,33 @@ int main(int argc, char** argv){
       int num = ins_counts[i].at(k);
       if(num >0){
         cout<<"No. of "<<operations.at(k)<<" instructions : "<<num<<endl;
+        if(k !=7 && k!= 8){
+          total_ins_count+=num;
+        }
+      }
+      if(k == 7 && num>0){
+        total_ins_count+=lws[i];
+        cout<<"No. of lw instructions executed : "<<lws[i]<<"\n";
+      }
+      if(k == 8 && num > 0){
+        total_ins_count+=sws[i];
+        cout<<"No. of sw instructions executed : "<<sws[i]<<"\n";
       }
     }
   }
+  if(DRAM_curr_req.core_num != -1){
+    string ins_name;
+    if(DRAM_curr_req.id == 0){
+      ins_name="lw";
+    }
+    else{
+      ins_name = "sw";
+    }
+    cout<<"DRAM REQUEST FORCE STOPPED : "+ins_name+" OF CORE "<<DRAM_curr_req.core_num<<"\n";
+  }
+  float ftotal_ins_count = total_ins_count+0.0;
+  float CPI = cycle_num/ftotal_ins_count;
+  cout<< "\nCycles per instruction (CPI) : "  << CPI<<"\n";
 
   return 0;
 }
