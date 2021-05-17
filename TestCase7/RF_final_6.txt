@@ -229,7 +229,7 @@ State of RF after cycle : 7
 0x00000000
 0x00000000
 0x00000000
-State of RF after cycle : 17
+State of RF after cycle : 8
 0x00000000
 0x00000000
 0x00000000

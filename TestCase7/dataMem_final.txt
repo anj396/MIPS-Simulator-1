@@ -1,0 +1,2 @@
+Data stored in DRAM after cycle :26
+248 : 1
